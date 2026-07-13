@@ -1,0 +1,6 @@
+{
+    "clickru": {
+        "token": "ваш_токен_clickru_api",
+        "base_url": "https://api.click.ru/V0"
+    }
+}

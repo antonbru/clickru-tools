@@ -1,0 +1,26 @@
+# Файлы конфигурации с токенами
+config.json
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Файлы ОС
+.DS_Store
+Thumbs.db
+
+# Логи
+*.log
