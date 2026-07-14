@@ -3,13 +3,13 @@
 Мониторинг бюджетов Яндекс.Директ через Click.ru API.
 
 Проверяет все активные кабинеты Директ у всех суб-пользователей Click.ru,
-считает доступный остаток (баланс кабинета + баланс плательщиков) и
-прогнозирует, на сколько дней хватит бюджета.
+считает прогноз по балансу КАБИНЕТА и показывает доступные балансы плательщиков
+с разбивкой по каждому (без BLOCKED и нулевых).
 
 Расход считается за вчерашний день. Если вчера расхода не было —
 по среднему за последние 7 дней.
 
-По умолчанию показывает только кабинеты, где бюджет закончится менее чем
+По умолчанию показывает только кабинеты, где бюджет на кабинете закончится менее чем
 через 3 дня. С флагом --all выводит все кабинеты.
 
 Зависимости: только стандартная библиотека Python 3.8+.
@@ -217,7 +217,7 @@ def run_report(token: str, show_all: bool = False) -> List[Dict[str, Any]]:
             continue
         accounts = acc_resp.get("response", {}).get("accounts", [])
 
-        # 4. Плательщики
+        # 4. Плательщики — собираем с разбивкой, пропускаем BLOCKED и нулевые
         payers_resp = api_get("/users/payers", token, uid)
         payers: List[Dict] = []
         if isinstance(payers_resp, list):
@@ -226,10 +226,31 @@ def run_report(token: str, show_all: bool = False) -> List[Dict[str, Any]]:
             rp = payers_resp["response"]
             payers = rp.get("payers", []) if isinstance(rp, dict) else (rp if isinstance(rp, list) else [])
 
-        # Суммируем балансы всех плательщиков
-        total_payer = sum(
-            float(p.get("balance", 0)) for p in payers if isinstance(p, dict)
-        )
+        payer_list: List[Dict[str, Any]] = []
+        total_payer = 0.0
+        for p in payers:
+            if not isinstance(p, dict):
+                continue
+            balance = float(p.get("balance", 0))
+            ptype = p.get("type", "unknown")
+            # Пропускаем BLOCKED (налоговый резерв) и нулевые/отрицательные
+            if ptype == "BLOCKED":
+                continue
+            if balance <= 0:
+                continue
+            # Имя плательщика
+            if ptype == "PERSON":
+                name = f"{p.get('lastName', '')} {p.get('firstName', '')}".strip() or "Физлицо"
+            elif ptype == "BUSINESS":
+                name = p.get("name", "Юрлицо")
+            elif ptype == "INDIVIDUAL":
+                name = p.get("description") or p.get("name", "ИП")
+            elif ptype == "BONUS":
+                name = "Бонус"
+            else:
+                name = p.get("name", p.get("description", ptype))
+            payer_list.append({"type": ptype, "name": name, "balance": balance})
+            total_payer += balance
 
         # Фильтруем: только активные кабинеты Яндекс.Директ
         direct_accounts = [
@@ -273,10 +294,19 @@ def run_report(token: str, show_all: bool = False) -> List[Dict[str, Any]]:
                 else:
                     daily_spend = 0
 
+            # === Прогноз по балансу КАБИНЕТА (не кабинет+плательщик) ===
+            runway_account = acc_balance / daily_spend if daily_spend > 0 else float("inf")
             total_available = acc_balance + total_payer
-            runway = total_available / daily_spend if daily_spend > 0 else float("inf")
 
-            level, label = classify_alert(runway)
+            level, label = classify_alert(runway_account)
+
+            # Рекомендация по плательщикам
+            if total_payer > 0:
+                payer_warning = f"💡 На балансе плательщиков есть {total_payer:,.0f} ₽ — нужно пополнить кабинет"
+            elif total_payer == 0:
+                payer_warning = "💡 Баланс плательщиков пуст — нужно пополнить баланс в Click.ru"
+            else:
+                payer_warning = f"💡 Баланс плательщиков отрицательный ({total_payer:,.0f} ₽) — срочно пополните Click.ru"
 
             # Если не show_all — пропускаем зелёную зону
             if not show_all and level == "🟢":
@@ -287,12 +317,14 @@ def run_report(token: str, show_all: bool = False) -> List[Dict[str, Any]]:
                 "account_name": acc_name,
                 "account_balance": acc_balance,
                 "payer_balance": total_payer,
+                "payer_list": payer_list,
                 "daily_spend": daily_spend,
                 "total_available": total_available,
-                "runway_days": runway,
+                "runway_days": runway_account,
                 "level": level,
                 "label": label,
                 "spend_source": spend_source,
+                "payer_warning": payer_warning,
             })
 
     return all_alerts
@@ -316,11 +348,15 @@ def print_report(alerts: List[Dict[str, Any]], show_all: bool = False) -> None:
     for a in alerts:
         print(f"\n{a['level']} {a['user_desc']} — {a['account_name']}")
         print(f"   Баланс кабинета:  {a['account_balance']:>12,.0f} ₽")
-        print(f"   Баланс плательщика:{a['payer_balance']:>12,.0f} ₽")
-        print(f"   Всего доступно:    {a['total_available']:>12,.0f} ₽")
         print(f"   Расход в день:     {a['daily_spend']:>12,.0f} ₽ ({a['spend_source']})")
         days_str = f"{a['runway_days']:.1f}" if a['runway_days'] >= 0.1 else "<0.1"
         print(f"   Прогноз:           {days_str:>12} дн. — {a['label']}")
+        # Плательщики с положительным балансом
+        if a['payer_list']:
+            print(f"   Плательщики ({a['payer_balance']:,.0f} ₽ всего):")
+            for p in a['payer_list']:
+                print(f"   • {p['type']} ({p['name']}): {p['balance']:,.0f} ₽")
+        print(f"   {a['payer_warning']}")
 
     print("\n" + "=" * 50)
 
