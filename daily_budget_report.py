@@ -138,19 +138,22 @@ def parse_daily_spend(csv_data: str) -> Dict[int, float]:
 def parse_weekly_spend(csv_data: str) -> Dict[int, Dict[str, Any]]:
     """
     Парсит CSV с недельной статистикой.
-    Возвращает {account_id: {"total": float, "active_days": int}}.
+    Возвращает {account_id: {"total": float, "active_days": int, "last_active_date": str}}.
     """
     result: Dict[int, Dict[str, Any]] = defaultdict(
-        lambda: {"total": 0.0, "active_days": 0}
+        lambda: {"total": 0.0, "active_days": 0, "last_active_date": ""}
     )
     try:
         reader = csv.DictReader(io.StringIO(csv_data))
         for row in reader:
             aid = int(row.get("accountId", 0))
             cost = float(row.get("cost", 0))
+            date = row.get("date", "")
             result[aid]["total"] += cost
             if cost > 0:
                 result[aid]["active_days"] += 1
+                if date > result[aid]["last_active_date"]:
+                    result[aid]["last_active_date"] = date
     except Exception:
         pass
     return result
@@ -285,12 +288,14 @@ def run_report(token: str, show_all: bool = False) -> List[Dict[str, Any]]:
 
             daily_spend = yesterday_spend.get(aid, 0)
             spend_source = "вчера"
+            last_active_date = ""
 
             if daily_spend <= 0:
-                ws = week_spend.get(aid, {"total": 0.0, "active_days": 0})
+                ws = week_spend.get(aid, {"total": 0.0, "active_days": 0, "last_active_date": ""})
                 if ws["active_days"] > 0:
                     daily_spend = ws["total"] / ws["active_days"]
                     spend_source = f"ср. за {ws['active_days']} дн."
+                    last_active_date = ws["last_active_date"]
                 else:
                     daily_spend = 0
 
@@ -320,6 +325,7 @@ def run_report(token: str, show_all: bool = False) -> List[Dict[str, Any]]:
                 "payer_list": payer_list,
                 "daily_spend": daily_spend,
                 "total_available": total_available,
+                "last_active_date": last_active_date,
                 "runway_days": runway_account,
                 "level": level,
                 "label": label,
@@ -349,6 +355,8 @@ def print_report(alerts: List[Dict[str, Any]], show_all: bool = False) -> None:
         print(f"\n{a['level']} {a['user_desc']} — {a['account_name']}")
         print(f"   Баланс кабинета:  {a['account_balance']:>12,.0f} ₽")
         print(f"   Расход в день:     {a['daily_spend']:>12,.0f} ₽ ({a['spend_source']})")
+        if a.get("last_active_date"):
+            print(f"   Последние траты:   {a['last_active_date']}")
         days_str = f"{a['runway_days']:.1f}" if a['runway_days'] >= 0.1 else "<0.1"
         print(f"   Прогноз:           {days_str:>12} дн. — {a['label']}")
         # Плательщики с положительным балансом
